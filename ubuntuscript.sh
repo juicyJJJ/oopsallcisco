@@ -2,8 +2,6 @@
 #==============================================================================
 #  CyberPatriot Linux Hardening Script
 #  Ubuntu 20.04 / 22.04 / 24.04  and  Linux Mint 20 / 21 / 22
-#  Rewritten from the 2016 script by Matthew Bierman (Lightning McQueens,
-#  Faith Lutheran Middle & High School, Las Vegas, NV).
 #
 #  HOW TO RUN
 #     sed -i 's/\r$//' cyberpatriot_ubuntu.sh   # only if copied from Windows/Google Docs
@@ -446,35 +444,62 @@ fi
 #--------------------------------- APT ----------------------------------------
 section "APT sources & package manager"
 wait_for_apt; run dpkg --configure -a
-for f in /etc/apt/apt.conf /etc/apt/apt.conf.d/*; do
-  [[ -f $f ]] || continue
-  if grep -qiE '^[^/#]*(AllowUnauthenticated|AllowInsecureRepositories|AllowDowngradeToInsecureRepositories|AllowWeakRepositories)[^;]*(true|yes|"1")' "$f"; then
-    backup_file "$f"
-    sed -i -E 's@^([^/#]*(AllowUnauthenticated|AllowInsecureRepositories|AllowDowngradeToInsecureRepositories|AllowWeakRepositories).*)$@// \1  // disabled by CP script@I' "$f"
-    warn "Disabled insecure APT option (unsigned packages allowed) in $f"
-  fi
-done
-for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
-  [[ -f $f ]] || continue
-  if grep -qiE 'trusted=yes|^[[:space:]]*Trusted:[[:space:]]*yes|allow-insecure=yes|allow-weak=yes' "$f"; then
-    backup_file "$f"
-    sed -i -E 's/trusted=yes/trusted=no/I; s/^([[:space:]]*Trusted:[[:space:]]*)yes/\1no/I; s/allow-insecure=yes/allow-insecure=no/I; s/allow-weak=yes/allow-weak=no/I' "$f"
-    warn "Removed 'trusted=yes' (skip signature check) from APT source $f"
-  fi
-done
 
-OFFICIAL='https?://([a-z0-9.-]+\.)?(archive|security|ports)\.ubuntu\.com/ubuntu/?'
-has_pocket() { # $1 = "" | -updates | -security
-  grep -rhsE "^[[:space:]]*deb[[:space:]]+(\[[^]]*\][[:space:]]+)?${OFFICIAL}[[:space:]]+${CODENAME}$1[[:space:]]" \
-    /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | grep -q .
-}
-if [[ -n $CODENAME ]]; then
-  if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]] && ! $IS_MINT; then
-    S=/etc/apt/sources.list.d/ubuntu.sources
-    if ! grep -qE "^[[:space:]]*Suites:.*${CODENAME}-security" "$S" || ! grep -qE "^[[:space:]]*Suites:.*${CODENAME}-updates" "$S" \
-       || grep -qiE '^[[:space:]]*Enabled:[[:space:]]*no' "$S"; then
-      backup_file "$S"
-      cat >"$S" <<EOF
+# Official package hosts for Ubuntu and Mint (country mirrors like us.archive.* match).
+OFFHOST='(([a-z0-9-]+\.)*(archive|security|ports|esm)\.ubuntu\.com|old-releases\.ubuntu\.com|([a-z0-9-]+\.)*linuxmint\.com)'
+OFFICIAL="https?://${OFFHOST}(/.*)?"
+# host of the first URI on a one-line "deb ..." entry (skips [opt=..] blocks)
+line_host() { awk '{for(i=1;i<=NF;i++) if($i ~ /:\/\//){u=$i; sub(/^[a-z]+:\/\//,"",u); sub(/\/.*/,"",u); sub(/:.*/,"",u); print tolower(u); exit}}' <<<"$1"; }
+is_off_host() { [[ $1 =~ ^${OFFHOST}$ ]]; }
+
+fix_apt_sources() {
+  local A=${APTDIR:-/etc/apt}
+  local SL="$A/sources.list" SLD="$A/sources.list.d" f
+  mkdir -p "$SLD"
+
+  # 1) Insecure apt.conf options (accept unsigned/weak packages) -> disable
+  for f in "$A/apt.conf" "$A"/apt.conf.d/*; do
+    [[ -f $f ]] || continue
+    if grep -qiE '^[^/#]*(AllowUnauthenticated|AllowInsecureRepositories|AllowDowngradeToInsecureRepositories|AllowWeakRepositories)[^;]*(true|yes|"1")' "$f"; then
+      backup_file "$f"
+      sed -i -E 's@^([^/#]*(AllowUnauthenticated|AllowInsecureRepositories|AllowDowngradeToInsecureRepositories|AllowWeakRepositories).*)$@// \1  // disabled by CP script@I' "$f"
+      warn "Disabled insecure APT option (unsigned packages allowed) in $f"
+    fi
+  done
+
+  # 2) 'trusted=yes' / allow-insecure in source entries -> skips signature checks
+  for f in "$SL" "$SLD"/*.list "$SLD"/*.sources; do
+    [[ -f $f ]] || continue
+    if grep -qiE 'trusted=yes|^[[:space:]]*Trusted:[[:space:]]*yes|allow-insecure=yes|allow-weak=yes' "$f"; then
+      backup_file "$f"
+      sed -i -E 's/trusted=yes/trusted=no/Ig; s/^([[:space:]]*Trusted:[[:space:]]*)yes/\1no/I; s/allow-insecure=yes/allow-insecure=no/Ig; s/allow-weak=yes/allow-weak=no/Ig' "$f"
+      warn "Removed signature-check bypass (trusted=yes) from $f"
+    fi
+  done
+
+  # 3) 'cdrom:' sources make 'apt update' hang waiting for a disc -> comment out
+  for f in "$SL" "$SLD"/*.list; do
+    [[ -f $f ]] || continue
+    if grep -qE '^[[:space:]]*deb([[:space:]]|-src[[:space:]]).*cdrom:' "$f"; then
+      backup_file "$f"
+      sed -i -E 's@^([[:space:]]*deb([[:space:]]|-src[[:space:]]).*cdrom:.*)@# \1   # cdrom disabled by CP script@' "$f"
+      warn "Commented out a 'cdrom:' APT source in $f (it blocks apt update)"
+    fi
+  done
+
+  # 4) Make sure the OFFICIAL repos (main + -updates + -security) are present & enabled
+  has_pocket() { # $1 = "" | -updates | -security
+    grep -rhsE "^[[:space:]]*deb([[:space:]]|-src[[:space:]])+(\[[^]]*\][[:space:]]+)?${OFFICIAL}[[:space:]]+${CODENAME}$1[[:space:]]" \
+      "$SL" "$SLD"/ 2>/dev/null | grep -q .
+  }
+  if [[ -n $CODENAME ]]; then
+    if [[ -f $SLD/ubuntu.sources ]] && ! $IS_MINT; then
+      local S="$SLD/ubuntu.sources"
+      if ! grep -qE "^[[:space:]]*Suites:.*${CODENAME}-security" "$S" \
+         || ! grep -qE "^[[:space:]]*Suites:.*${CODENAME}-updates" "$S" \
+         || grep -qiE '^[[:space:]]*Enabled:[[:space:]]*no' "$S"; then
+        backup_file "$S"
+        cat >"$S" <<EOF
 Types: deb
 URIs: http://archive.ubuntu.com/ubuntu/
 Suites: ${CODENAME} ${CODENAME}-updates ${CODENAME}-backports
@@ -487,25 +512,92 @@ Suites: ${CODENAME}-security
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 EOF
-      log "Restored official Ubuntu sources (incl. -updates and -security) in $S"
+        log "Restored official Ubuntu sources (incl. -updates and -security) in $S"
+      else info "Official deb822 sources already present in $S"; fi
+    else
+      local S; if $IS_MINT; then S="$SLD/official-package-repositories.list"; else S="$SL"; fi
+      touch "$S"; backup_file "$S"
+      # Re-enable commented-out official lines (the "Software & Updates" checkboxes)
+      sed -i -E "s@^#[[:space:]]*(deb([[:space:]]|-src[[:space:]])+(\[[^]]*\][[:space:]]+)?${OFFICIAL}[[:space:]]+${CODENAME}(-updates|-security|-backports)?[[:space:]])@\1@" "$S"
+      has_pocket ""          || echo "deb http://archive.ubuntu.com/ubuntu/ ${CODENAME} main restricted universe multiverse" >>"$S"
+      has_pocket "-updates"  || echo "deb http://archive.ubuntu.com/ubuntu/ ${CODENAME}-updates main restricted universe multiverse" >>"$S"
+      has_pocket "-security" || echo "deb http://security.ubuntu.com/ubuntu/ ${CODENAME}-security main restricted universe multiverse" >>"$S"
+      log "Official ${CODENAME}, ${CODENAME}-updates and ${CODENAME}-security repositories enabled ($S)"
+      $IS_MINT && ! grep -qsE "^[[:space:]]*deb[[:space:]]+https?://([a-z0-9.-]+\.)?linuxmint\.com" "$S" \
+        && review "[!] Mint repo (packages.linuxmint.com) not found in $S — verify Mint's own repos are present."
     fi
   else
-    if $IS_MINT; then S=/etc/apt/sources.list.d/official-package-repositories.list; else S=/etc/apt/sources.list; fi
-    touch "$S"; backup_file "$S"
-    # Re-enable commented-out official lines (that's what the "Software & Updates" checkboxes do)
-    sed -i -E "s@^#[[:space:]]*(deb[[:space:]]+(\[[^]]*\][[:space:]]+)?${OFFICIAL}[[:space:]]+${CODENAME}(-updates|-security)?[[:space:]])@\1@" "$S"
-    has_pocket ""          || echo "deb http://archive.ubuntu.com/ubuntu/ ${CODENAME} main restricted universe multiverse" >>"$S"
-    has_pocket "-updates"  || echo "deb http://archive.ubuntu.com/ubuntu/ ${CODENAME}-updates main restricted universe multiverse" >>"$S"
-    has_pocket "-security" || echo "deb http://security.ubuntu.com/ubuntu/ ${CODENAME}-security main restricted universe multiverse" >>"$S"
-    log "Official ${CODENAME}, ${CODENAME}-updates and ${CODENAME}-security repositories enabled ($S)"
+    warn "Could not detect the release codename — NOT touching sources.list. Verify it by hand."
   fi
-fi
-{ echo "--- APT repositories in use (look for anything unofficial) ---"
-  grep -hsvE '^[[:space:]]*(#|$)' /etc/apt/sources.list /etc/apt/sources.list.d/*.list
-  grep -hsE '^[[:space:]]*(URIs|Suites):' /etc/apt/sources.list.d/*.sources; echo; } >>"$REPORT"
+
+  # 5) Flag (and optionally disable) THIRD-PARTY / attacker-added repos.
+  #    One-line .list files first (PPAs are usually one file each).
+  local reported=0
+  for f in "$SLD"/*.list; do
+    [[ -f $f ]] || continue
+    local foreign=()
+    while IFS= read -r ln; do
+      local h; h=$(line_host "$ln"); [[ -z $h ]] && continue
+      is_off_host "$h" || foreign+=("$h")
+    done < <(grep -E '^[[:space:]]*deb([[:space:]]|-src[[:space:]])' "$f" | grep -vE 'cdrom:')
+    if ((${#foreign[@]})); then
+      reported=1
+      warn "Third-party APT repo in $f -> ${foreign[*]}"
+      review "[!] Third-party repo file: $f  (hosts: ${foreign[*]})"
+      if ask_yn "   Disable $f ? (do this unless the README requires this repo)"; then
+        backup_file "$f"; mv "$f" "$f.disabled-by-cp"
+        log "Disabled third-party repo file $f (renamed .disabled-by-cp)"
+      else review "    (kept $f — confirm it is required)"; fi
+    fi
+  done
+  #    deb822 .sources files (skip the official ubuntu.sources we manage above)
+  for f in "$SLD"/*.sources; do
+    [[ -f $f ]] || continue
+    [[ $(basename "$f") == ubuntu.sources ]] && ! $IS_MINT && continue
+    local uris; uris=$(grep -iE '^[[:space:]]*URIs:' "$f" | sed -E 's/^[^:]*:[[:space:]]*//')
+    local bad=0 u h
+    for u in $uris; do h=$(line_host "deb $u x y"); [[ -z $h ]] && continue; is_off_host "$h" || bad=1; done
+    if ((bad)); then
+      reported=1
+      warn "Third-party deb822 repo in $f -> $uris"
+      review "[!] Third-party deb822 repo: $f  ($uris)"
+      if ask_yn "   Disable $f ?"; then backup_file "$f"; mv "$f" "$f.disabled-by-cp"; log "Disabled $f"; fi
+    fi
+  done
+  #    Lines inside the MAIN sources.list (comment just the offending line)
+  if [[ -f $SL ]]; then
+    while IFS= read -r ln; do
+      local h; h=$(line_host "$ln"); [[ -z $h ]] && continue
+      if ! is_off_host "$h"; then
+        reported=1
+        warn "Third-party repo line in $SL -> $h"
+        review "[!] Third-party repo line in $SL: $ln"
+        if ask_yn "   Comment out this line in $SL ? ($h)"; then
+          backup_file "$SL"
+          # exact full-line match via awk (line contains [ ] . * etc. — not regex-safe)
+          awk -v t="$ln" '$0==t{print "# " $0 "   # third-party disabled by CP script"; next} {print}' "$SL" >"$SL.cptmp" && cat "$SL.cptmp" >"$SL"
+          rm -f "$SL.cptmp"
+          log "Commented out third-party repo line in $SL"
+        fi
+      fi
+    done < <(grep -E '^[[:space:]]*deb([[:space:]]|-src[[:space:]])' "$SL" | grep -vE 'cdrom:')
+  fi
+  ((reported==0)) && info "No third-party/unofficial APT repositories found."
+}
+fix_apt_sources
+
+{ echo "--- ACTIVE APT repositories after cleanup (should be official only, unless README requires more) ---"
+  grep -rhsvE '^[[:space:]]*(#|$)' "${APTDIR:-/etc/apt}/sources.list" "${APTDIR:-/etc/apt}/sources.list.d"/*.list 2>/dev/null | sed 's/^/   /'
+  grep -rhsE '^[[:space:]]*(URIs|Suites|Enabled):' "${APTDIR:-/etc/apt}/sources.list.d"/*.sources 2>/dev/null | sed 's/^/   /'
+  echo; } >>"$REPORT"
 wait_for_apt
-if apt-get update -q >>"$LOG" 2>&1; then log "apt-get update OK"; APT_OK=true
-else warn "apt-get update had errors (no internet or a broken repository). Package installs may fail."; APT_OK=false; fi
+if apt-get update -q >>"$LOG" 2>&1; then
+  log "apt-get update OK"; APT_OK=true
+else
+  APT_OK=false
+  warn "apt-get update reported errors — a repo may be unreachable/misconfigured. Offending lines:"
+  apt-get update 2>&1 | grep -iE '^(E:|W:|Err:)' | sed 's/^/     /' | tee -a "$LOG" >>"$REPORT"
+fi
 
 #--------------------------------- USERS --------------------------------------
 section "Users & groups"
@@ -615,7 +707,7 @@ passwd -l root >>"$LOG" 2>&1 && log "Root account password locked (use sudo)"
 #---------------------------- PASSWORD POLICY ---------------------------------
 section "Password & lockout policy (login.defs + PAM)"
 backup_file /etc/login.defs
-for kv in "PASS_MAX_DAYS 90" "PASS_MIN_DAYS 7" "PASS_WARN_AGE 14" "LOGIN_RETRIES 3" "LOGIN_TIMEOUT 60"; do
+for kv in "PASS_MAX_DAYS 90" "PASS_MIN_DAYS 7" "PASS_WARN_AGE 7" "LOGIN_RETRIES 3" "LOGIN_TIMEOUT 60"; do
   set_conf /etc/login.defs "${kv%% *}" "${kv#* }" $'\t'
 done
 grep -qE '^[[:space:]]*#?[[:space:]]*PASS_MIN_LEN[[:space:]]+[0-9]' /etc/login.defs \
@@ -761,6 +853,25 @@ for f in "${SUDO_FILES[@]}"; do
                 t ~ /=/ {print NR ":" $0}' "$f")
 done
 chown root:root "${SUDO_FILES[@]}"; chmod 440 "${SUDO_FILES[@]}"
+# Hardening Defaults (logged, pty-isolated, no password echo, short timeout).
+SUDOH=/etc/sudoers.d/99-cp-hardening
+cat >"$SUDOH" <<'SUDOEOF'
+# Added by CyberPatriot hardening script
+Defaults        env_reset
+Defaults        mail_badpass
+Defaults        secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults        use_pty
+Defaults        logfile="/var/log/sudo.log"
+Defaults        !visiblepw
+Defaults        always_set_home
+Defaults        timestamp_timeout=15
+Defaults        passwd_tries=3
+Defaults        passwd_timeout=1
+SUDOEOF
+chmod 440 "$SUDOH"
+if visudo -cf "$SUDOH" >/dev/null 2>&1; then log "sudoers hardening: use_pty, command logging (/var/log/sudo.log), no visible password, 15-min timeout"
+else rm -f "$SUDOH"; warn "sudoers hardening drop-in failed validation — skipped"; fi
+
 if ! visudo -c >>"$LOG" 2>&1; then
   cp -a "$BACKUP/sudoers.orig" /etc/sudoers
   [[ -d $BACKUP/sudoers.d.orig ]] && cp -a "$BACKUP/sudoers.d.orig/." /etc/sudoers.d/
@@ -801,6 +912,57 @@ if [[ -d /etc/lightdm ]] || is_installed lightdm; then
 fi
 
 #-------------------------------- FIREWALL ------------------------------------
+#-------------------------- ADVANCED LOGIN CONFIGS ----------------------------
+section "Advanced login hardening (su, idle timeout, console)"
+# Authorized-use banners (also referenced by the SSH 'Banner' directive)
+BANNER='Authorized access only. All activity is logged and monitored. Disconnect now if you are not an authorized user.'
+for b in /etc/issue /etc/issue.net; do printf '%s\n' "$BANNER" >"$b"; chmod 644 "$b"; chown root:root "$b"; done
+
+# Restrict 'su' to members of the sudo group (pam_wheel) so a standard user can't escalate
+SU=/etc/pam.d/su
+if [[ -f $SU ]] && pam_module_exists pam_wheel.so; then
+  backup_file "$SU"
+  if grep -qE '^[[:space:]]*#?[[:space:]]*auth[[:space:]]+required[[:space:]]+pam_wheel\.so' "$SU"; then
+    sed -i -E 's@^[[:space:]]*#?[[:space:]]*auth[[:space:]]+required[[:space:]]+pam_wheel\.so.*@auth       required   pam_wheel.so use_uid group=sudo@' "$SU"
+  else
+    sed -i '1i auth       required   pam_wheel.so use_uid group=sudo' "$SU"
+  fi
+  log "su restricted to members of the 'sudo' group (pam_wheel)"
+fi
+
+# Idle-session auto-logout (15 min) for interactive shells
+cat >/etc/profile.d/99-cp-autologout.sh <<'TMOUTEOF'
+# Auto-logout idle shells (CyberPatriot hardening)
+if [ -z "${TMOUT:-}" ]; then
+  TMOUT=900
+  readonly TMOUT 2>/dev/null || true
+  export TMOUT
+fi
+TMOUTEOF
+chmod 644 /etc/profile.d/99-cp-autologout.sh
+log "Idle shells auto-logout after 15 minutes"
+
+# login.defs: strong hashing cost + sane account defaults
+set_conf /etc/login.defs SHA_CRYPT_MIN_ROUNDS 65536 $'\t'
+set_conf /etc/login.defs USERGROUPS_ENAB yes $'\t'
+set_conf /etc/login.defs DEFAULT_HOME no $'\t'
+set_conf /etc/login.defs LOG_UNKFAIL_ENAB no $'\t'
+
+# securetty: never allow root login over a network (pts) tty
+if [[ -f /etc/securetty ]]; then
+  backup_file /etc/securetty
+  sed -i -E '/^[[:space:]]*(pts\/?[0-9]*|ssh)[[:space:]]*$/d' /etc/securetty
+  info "Removed any pts/ssh entries from /etc/securetty"
+fi
+# pam_securetty should guard console root login
+grep -rqsE '^[[:space:]]*auth[[:space:]]+required[[:space:]]+pam_securetty\.so' /etc/pam.d/login ||   review "Consider confirming console root login is restricted (pam_securetty in /etc/pam.d/login)."
+
+{ echo "--- Login config summary ---"
+  echo "   su group       : $(getent group sudo | cut -d: -f4)"
+  echo "   TMOUT          : 900s (idle auto-logout)"
+  echo "   Password aging : $(awk '/^PASS_MAX_DAYS/{print $2}' /etc/login.defs) max / $(awk '/^PASS_MIN_DAYS/{print $2}' /etc/login.defs) min days"
+  echo; } >>"$REPORT"
+
 section "Firewall (UFW)"
 is_installed ufw || apt_install ufw
 ssh_ports() {
@@ -835,41 +997,132 @@ fi
 #--------------------------------- SYSCTL -------------------------------------
 section "Kernel & network hardening (sysctl)"
 backup_file /etc/sysctl.conf /etc/sysctl.d
+CPSYSCTL=/etc/sysctl.d/99-cyberpatriot.conf
+
 SYSCTLS=(
-  "kernel.randomize_va_space=2"          "net.ipv4.ip_forward=0"                  "net.ipv6.conf.all.forwarding=0"
-  "net.ipv4.tcp_syncookies=1"            "net.ipv4.tcp_max_syn_backlog=2048"      "net.ipv4.tcp_synack_retries=2"
-  "net.ipv4.tcp_rfc1337=1"               "net.ipv4.conf.all.rp_filter=1"          "net.ipv4.conf.default.rp_filter=1"
-  "net.ipv4.conf.all.accept_source_route=0" "net.ipv4.conf.default.accept_source_route=0"
-  "net.ipv6.conf.all.accept_source_route=0" "net.ipv6.conf.default.accept_source_route=0"
-  "net.ipv4.conf.all.accept_redirects=0" "net.ipv4.conf.default.accept_redirects=0"
-  "net.ipv6.conf.all.accept_redirects=0" "net.ipv6.conf.default.accept_redirects=0"
-  "net.ipv4.conf.all.secure_redirects=0" "net.ipv4.conf.default.secure_redirects=0"
-  "net.ipv4.conf.all.send_redirects=0"   "net.ipv4.conf.default.send_redirects=0"
-  "net.ipv4.conf.all.log_martians=1"     "net.ipv4.conf.default.log_martians=1"
-  "net.ipv4.icmp_echo_ignore_broadcasts=1" "net.ipv4.icmp_ignore_bogus_error_responses=1"
-  "kernel.dmesg_restrict=1"              "kernel.kptr_restrict=2"                 "kernel.sysrq=0"
-  "kernel.yama.ptrace_scope=1"           "kernel.core_uses_pid=1"                 "fs.suid_dumpable=0"
-  "fs.protected_hardlinks=1"             "fs.protected_symlinks=1"                "kernel.unprivileged_bpf_disabled=1"
+  # --- address space / kernel hardening ---
+  "kernel.randomize_va_space=2"          # full ASLR
+  "kernel.dmesg_restrict=1"              # hide kernel log from non-root
+  "kernel.kptr_restrict=1"               # hide kernel pointers (CIS L1 = 1)
+  "kernel.yama.ptrace_scope=1"           # restrict ptrace to child procs
+  "kernel.sysrq=0"                       # disable magic SysRq key
+  "kernel.core_uses_pid=1"
+  "kernel.kexec_load_disabled=1"         # block loading a new kernel at runtime
+  "kernel.unprivileged_bpf_disabled=1"   # no unprivileged eBPF
   "net.core.bpf_jit_harden=2"
+  "fs.suid_dumpable=0"                   # no core dumps from setuid programs
+  "fs.protected_hardlinks=1"
+  "fs.protected_symlinks=1"
+  "fs.protected_fifos=2"
+  "fs.protected_regular=2"
+  # --- IPv4 network ---
+  "net.ipv4.ip_forward=0"                # not a router
+  "net.ipv4.tcp_syncookies=1"            # SYN-flood protection
+  "net.ipv4.tcp_max_syn_backlog=20480"
+  "net.ipv4.tcp_synack_retries=2"
+  "net.ipv4.tcp_syn_retries=5"
+  "net.ipv4.tcp_rfc1337=1"               # protect against TIME-WAIT assassination
+  "net.ipv4.conf.all.rp_filter=1"        # reverse-path (anti-spoof) filter
+  "net.ipv4.conf.default.rp_filter=1"
+  "net.ipv4.conf.all.accept_source_route=0"
+  "net.ipv4.conf.default.accept_source_route=0"
+  "net.ipv4.conf.all.accept_redirects=0"
+  "net.ipv4.conf.default.accept_redirects=0"
+  "net.ipv4.conf.all.secure_redirects=0"
+  "net.ipv4.conf.default.secure_redirects=0"
+  "net.ipv4.conf.all.send_redirects=0"
+  "net.ipv4.conf.default.send_redirects=0"
+  "net.ipv4.conf.all.log_martians=1"
+  "net.ipv4.conf.default.log_martians=1"
+  "net.ipv4.icmp_echo_ignore_broadcasts=1"
+  "net.ipv4.icmp_ignore_bogus_error_responses=1"
+  # --- IPv6 network ---
+  "net.ipv6.conf.all.forwarding=0"
+  "net.ipv6.conf.all.accept_source_route=0"
+  "net.ipv6.conf.default.accept_source_route=0"
+  "net.ipv6.conf.all.accept_redirects=0"
+  "net.ipv6.conf.default.accept_redirects=0"
+  "net.ipv6.conf.all.accept_ra=0"
+  "net.ipv6.conf.default.accept_ra=0"
+  "net.ipv6.conf.all.router_solicitations=0"
+  "net.ipv6.conf.default.router_solicitations=0"
+  "net.ipv6.conf.all.accept_ra_rtr_pref=0"
+  "net.ipv6.conf.default.accept_ra_rtr_pref=0"
+  "net.ipv6.conf.all.accept_ra_pinfo=0"
+  "net.ipv6.conf.default.accept_ra_pinfo=0"
+  "net.ipv6.conf.all.accept_ra_defrtr=0"
+  "net.ipv6.conf.default.accept_ra_defrtr=0"
+  "net.ipv6.conf.all.autoconf=0"
+  "net.ipv6.conf.default.autoconf=0"
+  "net.ipv6.conf.all.dad_transmits=0"
+  "net.ipv6.conf.default.dad_transmits=0"
+  "net.ipv6.conf.default.max_addresses=1"
+  # --- ARP / layer-2 anti-spoofing ---
+  "net.ipv4.conf.all.arp_ignore=1"
+  "net.ipv4.conf.all.arp_announce=2"
+  "net.ipv4.conf.all.drop_gratuitous_arp=1"
+  "net.ipv4.conf.all.proxy_arp=0"
+  "net.ipv4.conf.default.proxy_arp=0"
+  "net.ipv4.conf.all.shared_media=0"
+  "net.ipv4.conf.default.shared_media=0"
+  "net.ipv4.conf.all.mc_forwarding=0"
+  "net.ipv4.conf.all.bootp_relay=0"
+  # --- memory / misc ---
+  "vm.mmap_min_addr=65536"
+  "kernel.panic_on_oops=1"
 )
 $DISABLE_IPV6 && SYSCTLS+=("net.ipv6.conf.all.disable_ipv6=1" "net.ipv6.conf.default.disable_ipv6=1" "net.ipv6.conf.lo.disable_ipv6=1")
+
+# Write to the canonical file (grep-friendly) AND a high-precedence drop-in,
+# and comment out any conflicting value already set in an editable sysctl dir.
+{ echo "# CyberPatriot kernel/network hardening — overrides earlier files"; } >"$CPSYSCTL"
 for kv in "${SYSCTLS[@]}"; do
+  kv=${kv%%#*}; kv=${kv// /}; [[ -z $kv ]] && continue
   k=${kv%%=*}; v=${kv#*=}; kre=${k//./\\.}
   set_conf /etc/sysctl.conf "$k" "$v"
-  # Neutralize conflicting overrides that would win at boot
+  echo "$k = $v" >>"$CPSYSCTL"
   for f in /etc/sysctl.d/*.conf /run/sysctl.d/*.conf /usr/local/lib/sysctl.d/*.conf; do
-    [[ -f $f && ! -L $f ]] || continue
+    [[ -f $f && $f != "$CPSYSCTL" && ! -L $f ]] || continue
     if grep -qE "^[[:space:]]*${kre}[[:space:]]*=" "$f" && ! grep -qE "^[[:space:]]*${kre}[[:space:]]*=[[:space:]]*${v}[[:space:]]*$" "$f"; then
       sed -i -E "s|^([[:space:]]*${kre}[[:space:]]*=.*)$|# \1   # overridden by CP script|" "$f"
       info "Commented out conflicting $k in $f"
     fi
   done
 done
+chmod 644 "$CPSYSCTL"
 run sysctl --system
-log "sysctl applied: ASLR=$(sysctl -n kernel.randomize_va_space 2>/dev/null) syncookies=$(sysctl -n net.ipv4.tcp_syncookies 2>/dev/null) ip_forward=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)"
+
+# VERIFY every value actually took effect. This is the real guarantee: it catches
+# an override from ANY source (e.g. /usr/lib/sysctl.d or an attacker drop-in) that
+# wins at boot. Anything that won't stick is forced with -w and, if still wrong,
+# reported along with the file that's overriding it.
+MISS=0; CHECKED=0
+for kv in "${SYSCTLS[@]}"; do
+  kv=${kv%%#*}; kv=${kv// /}; [[ -z $kv ]] && continue
+  k=${kv%%=*}; v=${kv#*=}
+  cur=$(sysctl -n "$k" 2>/dev/null) || continue      # key absent (e.g. ipv6 off) — skip
+  ((CHECKED++)); cur=${cur//[[:space:]]/}
+  if [[ $cur != "$v" ]]; then
+    sysctl -w "$k=$v" >/dev/null 2>&1
+    cur=$(sysctl -n "$k" 2>/dev/null); cur=${cur//[[:space:]]/}
+    if [[ $cur != "$v" ]]; then
+      ((MISS++)); warn "sysctl $k is '$cur' but should be '$v'"
+      src=$(grep -rlsE "^[[:space:]]*${k//./\\.}[[:space:]]*=" /etc/sysctl.conf /etc/sysctl.d /run/sysctl.d /usr/lib/sysctl.d /usr/local/lib/sysctl.d 2>/dev/null | grep -vxF "$CPSYSCTL" | tr '\n' ' ')
+      [[ -n $src ]] && review "[!] sysctl $k overridden by: $src"
+    fi
+  fi
+done
+if ((MISS==0)); then log "sysctl: all $CHECKED applicable keys verified live (ASLR, rp_filter, syncookies, no redirects/forwarding, kptr/dmesg restricted, etc.)"
+else warn "$MISS sysctl value(s) could not be enforced — see REVIEW-ME.txt (a reboot may also be required)."; fi
+
+{ echo "--- Effective sysctl hardening values (verify against CIS / the README) ---"
+  for kv in "${SYSCTLS[@]}"; do kv=${kv%%#*}; kv=${kv// /}; [[ -z $kv ]] && continue
+    k=${kv%%=*}; printf '   %-45s = %s\n' "$k" "$(sysctl -n "$k" 2>/dev/null || echo '(n/a)')"; done
+  echo; } >>"$REPORT"
+
 mkdir -p /etc/security/limits.d
-echo '* hard core 0' >/etc/security/limits.d/99-cp-nocore.conf
-log "Core dumps disabled"
+printf '* hard core 0\n* soft core 0\nroot hard core 0\n' >/etc/security/limits.d/99-cp-nocore.conf
+log "Core dumps disabled (sysctl + limits.conf)"
 
 #-------------------------------- SERVICES ------------------------------------
 section "Services"
@@ -884,7 +1137,7 @@ if $NEED_SSH; then
     for kv in "PermitRootLogin no" "PermitEmptyPasswords no" "Protocol 2" "X11Forwarding no" "MaxAuthTries 3" \
               "LoginGraceTime 60" "IgnoreRhosts yes" "HostbasedAuthentication no" "PermitUserEnvironment no" \
               "ClientAliveInterval 300" "ClientAliveCountMax 3" "LogLevel VERBOSE" "UsePAM yes" "StrictModes yes" \
-              "AllowAgentForwarding no" "AllowTcpForwarding no" "PubkeyAuthentication yes"; do
+              "AllowAgentForwarding no" "AllowTcpForwarding no" "PubkeyAuthentication yes" "Banner /etc/issue.net"; do
       k=${kv%% *}; v=${kv#* }
       sshd_set /etc/ssh/sshd_config "$k" "$v"
       for d in /etc/ssh/sshd_config.d/*.conf; do [[ -f $d ]] && sshd_set "$d" "$k" "$v" 1; done
@@ -1182,6 +1435,15 @@ run systemctl daemon-reload
 # cron/at access
 ( cd /etc || exit; rm -f cron.deny at.deny; printf 'root\n' >cron.allow; printf 'root\n' >at.allow; chown root:root cron.allow at.allow; chmod 600 cron.allow at.allow )
 log "cron/at restricted to root"
+# Lock down ownership & permissions on all cron/at locations
+for f in /etc/crontab /etc/cron.allow /etc/at.allow; do [[ -e $f ]] && { chown root:root "$f"; chmod 600 "$f"; }; done
+for d in /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly /etc/cron.yearly; do
+  [[ -d $d ]] && { chown root:root "$d"; chmod 700 "$d"; }
+done
+[[ -d /var/spool/cron ]] && chmod 700 /var/spool/cron /var/spool/cron/* 2>/dev/null
+[[ -d /var/spool/cron/crontabs ]] && { chown root:crontab /var/spool/cron/crontabs 2>/dev/null; chmod 1730 /var/spool/cron/crontabs 2>/dev/null; }
+[[ -d /etc/cron.d ]] && find /etc/cron.d -type f -exec chmod 600 {} \; 2>/dev/null
+log "cron file/directory ownership & permissions hardened (root-owned, not world-accessible)"
 # Enabled services that listen but aren't required — just list them
 { echo "--- Enabled services (disable anything you don't recognize) ---"; systemctl list-unit-files --type=service --state=enabled --no-legend 2>/dev/null | awk '{print "   " $1}'; echo
   echo "--- Listening sockets (match each to an authorized service) ---"; (ss -tulpnH 2>/dev/null || netstat -tulpn 2>/dev/null) | sed 's/^/   /'; echo; } >>"$REPORT"
@@ -1299,6 +1561,17 @@ if ask_yn "Scan for media files (mp3, mp4, etc.) in user home folders? (list fir
 fi
 
 # Files with no owner (deleted-user leftovers) and world-writable files
+# Archives & scripts in user areas (hiding spots for tools/backdoors, e.g. a pyrdp .zip).
+{ echo "--- Archives in home/tmp/opt (verify contents; attackers hide tools here) ---"
+  find /home /root /tmp /var/tmp /opt -xdev -type f \
+    \( -iname '*.zip' -o -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.gz' \
+       -o -iname '*.7z' -o -iname '*.rar' -o -iname '*.bz2' -o -iname '*.xz' \) 2>/dev/null | head -80 | sed 's/^/   /'
+  echo "--- Loose scripts in odd locations (.py/.sh/.pl outside normal dirs — verify each) ---"
+  find /home /root /tmp /var/tmp /opt /usr/share /usr/local -xdev -type f \
+    \( -iname '*.py' -o -iname '*.sh' -o -iname '*.pl' -o -iname '*.rb' \) 2>/dev/null \
+    | grep -vE '^/usr/share/(doc|locale|man|help|icons|applications|python3)' | head -80 | sed 's/^/   /'
+  echo; } >>"$REPORT"
+
 { echo "--- Files owned by no user/group (orphaned — often from deleted attackers) ---"
   find / -xdev \( -nouser -o -nogroup \) -not -path '/proc/*' 2>/dev/null | head -60 | sed 's/^/   /'
   echo "--- World-writable files (chmod o-w the ones that shouldn't be) ---"
@@ -1408,6 +1681,180 @@ grep -qE '^[[:space:]]*UMASK' /etc/login.defs && sed -i -E 's/^[[:space:]]*UMASK
 grep -qxF 'session optional pam_umask.so' /etc/pam.d/common-session || echo 'session optional pam_umask.so' >>/etc/pam.d/common-session
 
 #------------------------------ AUDITING TOOLS --------------------------------
+#---------------------- ADDITIONAL HARDENING (point-earners) ------------------
+section "SUID backdoors, weak hashes, rhosts, world-writable"
+
+# 1) SUID/SGID on a shell, interpreter or core tool = instant-root backdoor.
+#    These must NEVER be setuid on a normal box, so strip the bit (recoverable).
+NEVER_SUID=(
+  /bin/bash /usr/bin/bash /bin/sh /bin/dash /usr/bin/dash /bin/zsh /usr/bin/zsh /usr/bin/ksh
+  /usr/bin/vi /usr/bin/vim /usr/bin/vim.basic /usr/bin/vim.tiny /bin/nano /usr/bin/nano /usr/bin/emacs
+  /usr/bin/less /usr/bin/more /bin/more /usr/bin/man /usr/bin/pico
+  /usr/bin/awk /usr/bin/gawk /usr/bin/mawk /usr/bin/sed
+  /usr/bin/perl /usr/bin/python2 /usr/bin/python3 /usr/bin/python /usr/bin/ruby /usr/bin/php /usr/bin/node /usr/bin/tclsh
+  /usr/bin/find /bin/cp /usr/bin/cp /bin/mv /usr/bin/mv /bin/tar /usr/bin/tar /usr/bin/dd /bin/dd
+  /usr/bin/env /usr/bin/xargs /usr/bin/ftp /usr/bin/scp /usr/bin/rsync /usr/bin/ed /usr/bin/ex
+  /usr/bin/nmap /usr/bin/tcpdump /usr/bin/ncat /usr/bin/nc /bin/nc /usr/bin/socat
+  /usr/bin/wget /usr/bin/curl /usr/bin/base64 /usr/bin/gdb /usr/bin/make /usr/bin/git
+  /usr/bin/bzip2 /usr/bin/gzip /usr/bin/zip /usr/bin/xterm /usr/bin/lua5.1 /usr/bin/lua5.2 /usr/bin/lua5.3 /usr/bin/lua5.4
+)
+stripped=0
+for pat in "${NEVER_SUID[@]}"; do
+  for f in $pat; do
+    [[ -f $f && ! -L $f ]] || continue
+    m=$(stat -c '%A' "$f" 2>/dev/null)
+    if [[ $m == ???s* || $m == ??????s* ]]; then
+      review "[!] SUID/SGID removed from $f (was $(stat -c '%a' "$f"))"
+      chmod u-s,g-s "$f" 2>/dev/null && { warn "Removed SUID/SGID from $f (setuid shell/tool = root backdoor)"; ((stripped++)); }
+    fi
+  done
+done
+((stripped)) && log "Stripped SUID/SGID from $stripped shell/interpreter/tool binary(ies)" || info "No backdoor SUID shells/tools found."
+
+# Surface any OTHER unexpected SUID/SGID binaries vs. a normal-system baseline.
+BASELINE='/usr/bin/(sudo|su|passwd|chsh|chfn|gpasswd|newgrp|mount|umount|fusermount3?|pkexec|at|crontab|ssh-agent|expiry|wall|write)$|/usr/lib/.*(dbus|polkit|openssh|eject|xorg|snapd|utempter).*|/bin/(su|mount|umount|ping|fusermount)$|/usr/sbin/(pppd|mount.nfs)$'
+{ echo "--- Unexpected SUID/SGID binaries (compare to a clean image; investigate anything odd) ---"
+  find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -not -path '/proc/*' 2>/dev/null | grep -vE "$BASELINE" | sed 's/^/   /'
+  echo; } >>"$REPORT"
+
+# 2) Weak password hashes: MD5 ($1$) or DES (no $). SHA-256/512, yescrypt, bcrypt are fine.
+while IFS=: read -r name hash _; do
+  [[ -z $name ]] && continue
+  case "$hash" in
+    ''|'*'|'!'*|'*'*) continue ;;                       # empty/locked -> handled elsewhere
+    \$6\$*|\$5\$*|\$y\$*|\$7\$*|\$2a\$*|\$2b\$*|\$2y\$*|\$gy\$*) continue ;;  # strong
+    \$1\$*) wk="MD5" ;;
+    *) wk="DES/crypt" ;;
+  esac
+  if is_human "$name"; then
+    if [[ $name == "$MAIN_USER" ]]; then
+      warn "YOUR account ($name) uses a weak $wk password hash — run 'passwd' to rehash it as SHA-512."
+    else
+      echo "$name:$PW" | chpasswd && log "Rehashed weak $wk password for $name (SHA-512)"
+    fi
+  else
+    passwd -l "$name" >>"$LOG" 2>&1 && log "Locked system account $name (had a weak $wk hash)"
+  fi
+done < <(cat /etc/shadow)
+
+# 3) rlogin / rsh trust files = passwordless login. Quarantine them.
+mapfile -t TRUSTF < <(find /root /home -maxdepth 3 \( -name .rhosts -o -name .shosts \) -type f 2>/dev/null; \
+                      for g in /etc/hosts.equiv /etc/shosts.equiv /etc/ssh/shosts.equiv; do [[ -f $g ]] && echo "$g"; done)
+for f in "${TRUSTF[@]}"; do
+  [[ -f $f ]] || continue
+  backup_file "$f"; mv "$f" "$QUAR/$(echo "$f" | tr / _)" 2>/dev/null \
+    && warn "Quarantined trust file $f (allows passwordless rlogin/rsh)"
+done
+# .netrc (plaintext creds) and .forward (can run commands) — surface only
+{ for h in /root /home/*; do
+    [[ -f $h/.netrc ]] && echo "   [!] plaintext creds file: $h/.netrc"
+    [[ -f $h/.forward ]] && echo "   [!] mail .forward (can pipe to a command): $h/.forward -> $(cat "$h/.forward" 2>/dev/null)"
+  done; } >>"$REPORT"
+
+# 4) World-writable dirs need the sticky bit; world-writable files are a risk.
+fixed=0
+while IFS= read -r d; do [[ -d $d ]] && chmod +t "$d" 2>/dev/null && ((fixed++)); done < <(
+  find / -xdev -type d -perm -0002 ! -perm -1000 -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null)
+((fixed)) && log "Added sticky bit to $fixed world-writable director(ies)"
+mapfile -t WWF < <(find / -xdev -type f -perm -0002 -not -path '/proc/*' -not -path '/sys/*' -not -path '/dev/*' -not -path '/run/*' 2>/dev/null)
+if ((${#WWF[@]})); then
+  review "--- World-writable files (anyone can modify these) ---"; printf '   %s\n' "${WWF[@]}" >>"$REPORT"; review ""
+  if ask_yn "Remove world-write permission from ${#WWF[@]} world-writable file(s)? (recommended)"; then
+    for f in "${WWF[@]}"; do chmod o-w "$f" 2>/dev/null; done
+    log "Removed world-write from ${#WWF[@]} files"
+  fi
+fi
+
+# 5) Lock down /root and verify home ownership
+chmod 700 /root 2>/dev/null; chown root:root /root 2>/dev/null
+log "/root restricted to root (700)"
+
+#----------------------------- BROWSER POLICY ---------------------------------
+section "Firefox security policy"
+# Enterprise policy: telemetry off, tracking protection on, no password saving, auto-update on.
+if is_installed firefox || is_installed firefox-esr || [[ -d /etc/firefox || -d /usr/lib/firefox ]] || (command -v snap >/dev/null && snap list firefox >/dev/null 2>&1); then
+  mkdir -p /etc/firefox/policies
+  cat >/etc/firefox/policies/policies.json <<'JSON'
+{
+  "policies": {
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "EnableTrackingProtection": { "Value": true, "Locked": true, "Cryptomining": true, "Fingerprinting": true },
+    "OfferToSaveLogins": false,
+    "PasswordManagerEnabled": false,
+    "DisablePocket": true,
+    "DontCheckDefaultBrowser": true,
+    "SanitizeOnShutdown": { "Cache": true },
+    "AppAutoUpdate": true,
+    "ExtensionUpdate": true,
+    "SearchSuggestEnabled": false
+  }
+}
+JSON
+  chmod 644 /etc/firefox/policies/policies.json
+  if command -v python3 >/dev/null && python3 -c 'import json,sys;json.load(open("/etc/firefox/policies/policies.json"))' 2>/dev/null; then
+    log "Firefox hardening policy installed (telemetry off, tracking protection on, no saved passwords)"
+  else warn "Firefox policy JSON failed to validate — removing it."; rm -f /etc/firefox/policies/policies.json; fi
+  review "Note: the Firefox policy applies to the .deb/Mint Firefox; Snap Firefox may need the same settings set in-app."
+else info "Firefox not installed — skipping browser policy."; fi
+
+# Chromium / Chrome enterprise policy (the README's browser is often Chromium):
+# safe browsing on, pop-ups & dangerous downloads blocked, no password/autofill saving.
+if is_installed chromium || is_installed chromium-browser || is_installed google-chrome-stable \
+   || [[ -d /etc/chromium || -d /etc/chromium-browser ]] || (command -v snap >/dev/null && snap list chromium >/dev/null 2>&1); then
+  read -r -d '' CHROME_POLICY <<'JSON'
+{
+  "SafeBrowsingProtectionLevel": 2,
+  "SafeBrowsingEnabled": true,
+  "PasswordManagerEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "MetricsReportingEnabled": false,
+  "BlockThirdPartyCookies": true,
+  "DefaultPopupsSetting": 2,
+  "DownloadRestrictions": 3,
+  "DefaultGeolocationSetting": 2,
+  "DefaultNotificationsSetting": 2,
+  "DnsOverHttpsMode": "automatic",
+  "ComponentUpdatesEnabled": true,
+  "BackgroundModeEnabled": false
+}
+JSON
+  wrote=0
+  for d in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed /etc/opt/chrome/policies/managed; do
+    mkdir -p "$d" 2>/dev/null || continue
+    printf '%s\n' "$CHROME_POLICY" >"$d/cp-hardening.json"; chmod 644 "$d/cp-hardening.json"; ((wrote++))
+  done
+  if command -v python3 >/dev/null && printf '%s' "$CHROME_POLICY" | python3 -c 'import json,sys;json.load(sys.stdin)' 2>/dev/null; then
+    log "Chromium/Chrome hardening policy installed ($wrote location(s): safe browsing, pop-up & dangerous-download blocking, no saved passwords)"
+  else
+    warn "Chromium policy JSON failed to validate — removing it."
+    rm -f /etc/chromium/policies/managed/cp-hardening.json /etc/chromium-browser/policies/managed/cp-hardening.json /etc/opt/chrome/policies/managed/cp-hardening.json
+  fi
+  review "Note: browser policy applies to the .deb/Mint Chromium; a Snap Chromium may need the same settings set in-app (Settings > Privacy/Security)."
+else info "Chromium/Chrome not installed — skipping."; fi
+
+#------------------------------- AUDIT RULES ----------------------------------
+# Only if auditd is present; watch the files attackers tamper with.
+if [[ -d /etc/audit/rules.d ]]; then
+  cat >/etc/audit/rules.d/cp-hardening.rules <<'AUD'
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/sudoers -p wa -k scope
+-w /etc/sudoers.d/ -p wa -k scope
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /var/log/auth.log -p wa -k authlog
+-w /etc/pam.d/ -p wa -k pam
+-w /etc/crontab -p wa -k cron
+-w /etc/cron.d/ -p wa -k cron
+AUD
+  command -v augenrules >/dev/null && augenrules --load >>"$LOG" 2>&1
+  run systemctl restart auditd
+  log "auditd watch rules installed for passwd/shadow/sudoers/sshd/pam/cron"
+fi
+
 section "Security auditing tools"
 if [[ ${APT_OK:-true} == true ]]; then
   apt_install auditd audispd-plugins && { run systemctl enable --now auditd; log "auditd installed & enabled"; }
@@ -1422,20 +1869,99 @@ fi
 unit_exists acct && run systemctl enable --now acct
 
 #---------------------------- AUTOMATIC UPDATES -------------------------------
-section "Automatic security updates"
-if [[ ${APT_OK:-true} == true ]]; then apt_install unattended-upgrades apt-listchanges; fi
-cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+# Full "Software & Updates -> Updates" configuration. These are the exact knobs
+# the GUI (and the scoring engine) read: the APT::Periodic counters, the
+# unattended-upgrades security origin, and the systemd timers that run it.
+section "Automatic updates (security + daily checks)"
+if [[ ${APT_OK:-true} == true ]]; then
+  apt_install unattended-upgrades update-notifier-common apt-listchanges
+fi
+
+# 1) APT::Periodic — what "Software & Updates" writes. 20auto-upgrades is the
+#    modern file; 10periodic is the legacy one (kept in sync so either check passes).
+write_periodic() {
+  cat >"$1" <<'EOF'
+APT::Periodic::Enable "1";
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Download-Upgradeable-Packages "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
+APT::Periodic::Verbose "1";
 EOF
-if [[ -f /etc/apt/apt.conf.d/50unattended-upgrades ]]; then
-  backup_file /etc/apt/apt.conf.d/50unattended-upgrades
-  sed -i -E 's@^//([[:space:]]*"\$\{distro_id\}:\$\{distro_codename\}-security";)@  \1@' /etc/apt/apt.conf.d/50unattended-upgrades
+  chmod 644 "$1"
+}
+backup_file /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/10periodic
+write_periodic /etc/apt/apt.conf.d/20auto-upgrades
+[[ -f /etc/apt/apt.conf.d/10periodic ]] && write_periodic /etc/apt/apt.conf.d/10periodic
+log "APT::Periodic set: update lists daily, download upgrades, run unattended-upgrade, autoclean weekly"
+
+# 2) unattended-upgrades: make sure the SECURITY (and -updates) origins are active.
+#    We only uncomment the distro's own default origin lines, so the codename
+#    expands correctly on both Ubuntu and Mint — no hand-crafted origins to get wrong.
+U50=/etc/apt/apt.conf.d/50unattended-upgrades
+if [[ -f $U50 ]]; then
+  backup_file "$U50"
+  sed -i -E 's@^//([[:space:]]*"\$\{distro_id\}:\$\{distro_codename\}-security";)@        \1@' "$U50"
+  sed -i -E 's@^//([[:space:]]*"\$\{distro_id\}:\$\{distro_codename\}-updates";)@        \1@'  "$U50"
+  sed -i -E 's@^//([[:space:]]*"\$\{distro_id\}ESMApps:\$\{distro_codename\}-apps-security";)@        \1@' "$U50"
+  sed -i -E 's@^//([[:space:]]*"\$\{distro_id\}ESM:\$\{distro_codename\}-infra-security";)@        \1@'   "$U50"
+  # NEVER auto-enable -proposed or -backports (unstable) — re-comment if someone did
+  sed -i -E 's@^([[:space:]]*)("\$\{distro_id\}:\$\{distro_codename\}-(proposed|backports)";)@\1// \2@' "$U50"
+  log "unattended-upgrades: security + updates origins enabled (proposed/backports left off)"
+else
+  warn "50unattended-upgrades not found — relying on the drop-in below for origins."
 fi
+
+# 3) Safety drop-in (highest precedence). Critically: NO automatic reboot and NO
+#    autoremove during the round, so the updater can't take the box down or pull
+#    out the desktop. These override anything above.
+cat >/etc/apt/apt.conf.d/52cyberpatriot-unattended <<'EOF'
+// Added by CyberPatriot hardening script — safety overrides for unattended-upgrades.
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+Unattended-Upgrade::Remove-Unused-Dependencies "false";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
+Unattended-Upgrade::MinimalSteps "true";
+Unattended-Upgrade::InstallOnShutdown "false";
+Unattended-Upgrade::Mail "";
+Unattended-Upgrade::SyslogEnable "true";
+// If 50unattended-upgrades is missing, these ensure security still auto-installs:
+Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+        "${distro_id}ESMApps:${distro_codename}-apps-security";
+        "${distro_id}ESM:${distro_codename}-infra-security";
+        "Ubuntu:${distro_codename}-security";
+};
+EOF
+chmod 644 /etc/apt/apt.conf.d/52cyberpatriot-unattended
+log "Safety overrides set: no auto-reboot, no auto-remove (protects the desktop)"
+
+# 4) Make sure the machinery that RUNS all this is actually enabled — an attacker
+#    may have masked the timers so updates silently never run.
+for t in apt-daily.timer apt-daily-upgrade.timer; do
+  systemctl unmask "$t" >>"$LOG" 2>&1
+  systemctl enable --now "$t" >>"$LOG" 2>&1
+done
+systemctl unmask unattended-upgrades.service >>"$LOG" 2>&1
 run systemctl enable --now unattended-upgrades
-log "Daily update checks + automatic security upgrades enabled"
+log "apt-daily + apt-daily-upgrade timers unmasked and enabled; unattended-upgrades service on"
+
+# 5) Validate the config actually parses, and dry-run the updater if we can.
+if apt-config dump >/dev/null 2>>"$LOG"; then
+  info "APT auto-update config parses cleanly."
+else
+  warn "An APT config file has a syntax error — run 'sudo apt-config dump' to find it."
+fi
+if command -v unattended-upgrade >/dev/null 2>&1 && [[ ${APT_OK:-true} == true ]]; then
+  if unattended-upgrade --dry-run >>"$LOG" 2>&1; then info "unattended-upgrade --dry-run succeeded."
+  else warn "unattended-upgrade --dry-run reported a problem (see log) — check origins/network."; fi
+fi
+{ echo "--- Automatic-update settings in effect ---"
+  apt-config dump 2>/dev/null | grep -iE 'APT::Periodic|Unattended-Upgrade::(Allowed-Origins|Automatic-Reboot|Remove-Unused)' | sed 's/^/   /'
+  echo "   Timers:"; systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null | sed 's/^/     /'
+  echo; } >>"$REPORT"
+log "Daily update checks + automatic security upgrades fully configured"
 
 #-------------------------------- UPDATES -------------------------------------
 if [[ $UPDATE_MODE != s && ${APT_OK:-true} == true ]]; then
@@ -1569,6 +2095,8 @@ if grep -qE '(^|[[:space:]])(0\.0\.0\.0|127\.0\.0\.1)[[:space:]]+.*(update|secur
   warn "/etc/hosts has suspicious redirect entries — review it (not auto-edited to avoid breaking name resolution)."
 fi
 chmod 644 /etc/hosts; chown root:root /etc/hosts
+{ echo "--- /etc/resolv.conf nameservers (verify these are expected, not attacker DNS) ---"
+  grep -E '^[[:space:]]*nameserver' /etc/resolv.conf 2>/dev/null | sed 's/^/   /'; echo; } >>"$REPORT"
 
 #---------------------------------- DONE --------------------------------------
 chown -R "$MAIN_USER": "$OUT" 2>/dev/null
