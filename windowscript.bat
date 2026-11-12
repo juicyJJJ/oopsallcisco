@@ -1,163 +1,405 @@
 @echo off
+setlocal enabledelayedexpansion
+net session
+:: Verify administrator privileges
+fltmc >nul 2>&1
 
-:SetSecPol
-REM GO TO SECPOL & USE SECEDIT
+if errorlevel 1 (
+    echo ERROR: Please run this script as Administrator.
+    pause
+    exit /b 1
+) else (
+    echo Administrator privileges confirmed.
+)
+
+cls
+
+set /p answer=Have you answered all the forensics questions?[y/n]: 
+	if /I {%answer%}=={y} (
+		goto :menu
+	) else (
+		echo please go and answer them.
+		pause
+		exit
+	)
+	
+:menu
+	cls
+	echo "~~~~~~~~~~~~~~~OOPSALL~CISCO~2026-7~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+	echo "1)Set user properties		  2)Create a user"
+	echo "3)Disable a user		      4)Change passwords"
+	echo "5)Disable guest/admin	 	  6)Set password policy"
+	echo "7)Set lockout policy		  8)Enable Firewall"
+	echo "9)Search for media files	10)Disable services"
+	echo "11)Turn on UAC			      12)Remote Desktop Config"
+	echo "13)Enable auto update		  14)Security options"
+	echo "15)Audit the machine		  16)Edit groups"
+	echo "17)Exit	Menu			        18)Reboot"
+	echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+	set /p answer=Please choose an option: 
+		if "%answer%"=="1" goto :userProp
+		if "%answer%"=="2" goto :createUser
+		if "%answer%"=="3" goto :disUser
+		if "%answer%"=="4" goto :passwd
+		if "%answer%"=="5" goto :disGueAdm
+		if "%answer%"=="6" goto :passwdPol
+		if "%answer%"=="7" goto :lockout
+		if "%answer%"=="8" goto :firewall
+		if "%answer%"=="9" goto :badFiles
+		if "%answer%"=="10" goto :services
+		if "%answer%"=="11" goto :UAC
+		if "%answer%"=="12" goto :remDesk
+		if "%answer%"=="13" goto :autoUpdate
+		if "%answer%"=="14" goto :secOpt
+		if "%answer%"=="15" goto :audit
+		if "%answer%"=="16" goto :group
+		rem turn on screensaver
+		rem password complexity
+		if "%answer%"=="17" exit
+		if "%answer%"=="18" shutdown /r
+	pause
+goto :menu
+
+:userProp
+	echo Setting password never expires
+	wmic UserAccount set PasswordExpires=False
+	wmic UserAccount set PasswordChangeable=True
+	wmic UserAccount set PasswordRequired=True
+
+	pause
+	goto :menu
+
+:passwd
+cls
+echo Local accounts on this computer:
+net user
+echo.
+
+set /p "TARGET=Enter the exact account name to reset (or press Enter to return): "
+if not defined TARGET goto :menu
+
+net user "%TARGET%" >nul 2>&1
+if errorlevel 1 (
+    echo Account not found. Check the spelling.
+    pause
+    goto :passwd
+)
+
+set /p "CONFIRM=Reset the password for %TARGET%? [y/n]: "
+if /I not "%CONFIRM%"=="Y" goto :passwd
+
+set /p "NEWPASS=Type the new password (visible): "
+if not defined NEWPASS (
+    echo Password cannot be blank.
+    pause
+    goto :passwd
+)
+
+net user "%TARGET%" "%NEWPASS%"
+if errorlevel 1 (
+    echo Password reset failed. Check the error above.
+) else (
+    echo Password reset completed for %TARGET%.
+)
+
+set "NEWPASS="
+
+echo.
+set /p "MORE=Reset another account? [y/n]: "
+if /I "%MORE%"=="Y" goto :passwd
+
 pause
+goto :menu
+	
+:disUser
+	cls
+	net users
+	set /p answer=Would you like to disable a user?[y/n]: 
+	if /I "%answer%"=="y" (
+		cls
+		net users
+		set /p DISABLE=What is the name of the user?:
+			net user !DISABLE! /active:no
+		echo !DISABLE! has been disabled
+		pause
+		goto :disUser
+	)
+	
+	pause
+	goto :menu
+	
+:createUser
+	set /p answer=Would you like to create a user?[y/n]: 
+	if /I "%answer%"=="y" (
+		set /p NAME=What is the user you would like to create?:
+		net user !NAME! /add
+		echo !NAME! has been added
+		pause 
+		goto :createUser
+	) 
+	if /I "%answer%"=="n" (
+		goto :menu
+	)
+goto :menu
 
-:PasswordSecurity
-reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f
-reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa" /v restrictanonymoussam /t REG_DWORD /d 1 /f
-reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 0 /f
-reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v dontdisplaylastusername /t REG_DWORD /d 1 /f
-reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\services\Netlogon\Parameters" /v DisablePasswordChange /t REG_DWORD /d 1 /f
+:disGueAdm
+	rem Disables the guest account
+	net user Guest | findstr Active | findstr Yes
+	if %errorlevel%==0 (
+		echo Guest account is already disabled.
+	)
+	if %errorlevel%==1 (
+		net user guest /active:no
+	)
+	
+	rem Disables the Admin account
+	net user Administrator | findstr Active | findstr Yes
+	if %errorlevel%==0 (
+		echo Admin account is already disabled.
+		pause
+		goto :menu
+	)
+	if %errorlevel%==1 (
+		net user administrator /active:no
+		pause
+		goto :menu
+	)
+	
+:passwdPol
+	rem Sets the password policy
+	rem Set complexity requirments
+	echo Setting pasword policies
+	net accounts /minpwlen:8
+	net accounts /maxpwage:60
+	net accounts /minpwage:10
+	net accounts /uniquepw:3
+	
+	pause
+	goto :menu
+	
+:lockout
+	rem Sets the lockout policy
+	echo Setting the lockout policy
+	net accounts /lockoutduration:30
+	net accounts /lockoutthreshold:3
+	net accounts /lockoutwindow:30
 
-:Misc
-reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v DisableCAD /t REG_DWORD /d 0 /f :: Alt Control Delete
-reg ADD "HKU\.DEFAULT\Control Panel\Accessibility\StickyKeys" /v Flags /t REG_SZ /d 506 /f :: Disable Sticky Key
-reg add "HKCU\SYSTEM\CurrentControlSet\Services\CDROM" /v AutoRun /t REG_DWORD /d 1 /f :: Disable autoruns
+	pause
+	goto :menu
+	
+:firewall
+	rem Enables firewall
+	netsh advfirewall set allprofiles state on
+	netsh advfirewall reset
+	
+	pause
+	goto :menu
+	
+:badFiles
+	goto :menu
 
+:services
+	echo Disabling Services
+	sc stop TapiSrv
+	sc config TapiSrv start= disabled
+	sc stop TlntSvr
+	sc config TlntSvr start= disabled
+	sc stop ftpsvc
+	sc config ftpsvc start= disabled
+	sc stop SNMP
+	sc config SNMP start= disabled
+	sc stop SessionEnv
+	sc config SessionEnv start= disabled
+	sc stop TermService
+	sc config TermService start= disabled
+	sc stop UmRdpService
+	sc config UmRdpService start= disabled
+	sc stop SharedAccess
+	sc config SharedAccess start= disabled
+	sc stop remoteRegistry 
+	sc config remoteRegistry start= disabled
+	sc stop SSDPSRV
+	sc config SSDPSRV start= disabled
+	sc stop W3SVC
+	sc config W3SVC start= disabled
+	sc stop SNMPTRAP
+	sc config SNMPTRAP start= disabled
+	sc stop remoteAccess
+	sc config remoteAccess start= disabled
+	sc stop HomeGroupProvider
+	sc config HomeGroupProvider start= disabled
+	sc stop HomeGroupListener
+	sc config HomeGroupListener start= disabled
+	
+	pause
+	goto :menu
+:UAC
 
-:ShowHidden
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Hidden /t REG_DWORD /d 1 /f :: Show hidden files
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowSuperHidden /t REG_DWORD /d 1 /f :: Show super hidden files
+	rem Enable UAC
+	echo Turning on UAC has to be done manually.
+	
+	pause
+	goto :menu
 
-:WebSecurity
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v WarnOnPostRedirect /t REG_DWORD /d 1 /f
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v WarnonBadCertRecving /t REG_DWORD /d 1 /f
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v DisablePasswordCaching /t REG_DWORD /d 1 /f
-reg add "HKCU\Software\Microsoft\Internet Explorer\PhishingFilter" /v EnabledV9 /t REG_DWORD /d 1 /f
+:remDesk
+	rem Ask for remote desktop
+	set /p answer=Do you want remote desktop enabled?[y/n]
+	if /I "%answer%"=="y" (
+		reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+		echo RemoteDesktop has been enabled, reboot for this to take full effect.
+	)
+	if /I "%answer%"=="n" (
+		reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 1 /f
+		echo RemoteDesktop has been disabled, reboot for this to take full effect.
+	)
+	
+	pause
+	goto :menu
+	
+:autoUpdate
+	rem Turn on automatic updates
+	echo Turning on automatic updates
+	reg add "HKLM\SOFTWARE\Microsoft\WINDOWS\CurrentVersion\WindowsUpdate\Auto Update" /v AUOptions /t REG_DWORD /d 4 /f
 
-:: OTHER
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v WarnonZoneCrossing /t REG_DWORD /d 1 /f
-reg add "HKCU\Software\Microsoft\Internet Explorer\Main" /v DoNotTrack /t REG_DWORD /d 1 /f
-reg add "HKCU\Software\Microsoft\Internet Explorer\Download" /v RunInvalidSignatures /t REG_DWORD /d 1 /f
-reg add "HKCU\Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_LOCALMACHINE_LOCKDOWN\Settings" /v LOCALMACHINE_CD_UNLOCK /t REG_DWORD /d 1 /f
+	pause
+	goto :menu
+	
+:secOpt
+	echo Changing security options now.
 
+	rem Restrict CD ROM drive
+	reg ADD "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AllocateCDRoms /t REG_DWORD /d 1 /f
 
+	rem Automatic Admin logon
+	reg ADD "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_DWORD /d 0 /f
+	
+	rem Logon message text
+	set /p body=Please enter logon text: 
+		reg ADD "HKLM\SYSTEM\microsoft\Windows\CurrentVersion\Policies\System\legalnoticetext" /v LegalNoticeText /t REG_SZ /d "%body%"
+	
+	rem Logon message title bar
+	set /p subject=Please enter the title of the message: 
+		reg ADD "HKLM\SYSTEM\microsoft\Windows\CurrentVersion\Policies\System\legalnoticecaption" /v LegalNoticeCaption /t REG_SZ /d "%subject%"
+	
+	rem Wipe page file from shutdown
+	reg ADD "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v ClearPageFileAtShutdown /t REG_DWORD /d 1 /f
+	
+	rem Disallow remote access to floppie disks
+	reg ADD "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AllocateFloppies /t REG_DWORD /d 1 /f
+	
+	rem Prevent print driver installs 
+	reg ADD "HKLM\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers" /v AddPrinterDrivers /t REG_DWORD /d 1 /f
+	
+	rem Limit local account use of blank passwords to console
+	reg ADD "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f
+	
+	rem Auditing access of Global System Objects
+	reg ADD "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v auditbaseobjects /t REG_DWORD /d 1 /f
+	
+	rem Auditing Backup and Restore
+	reg ADD "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v fullprivilegeauditing /t REG_DWORD /d 1 /f
+	
+	rem Do not display last user on logon
+	reg ADD HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v dontdisplaylastusername /t REG_DWORD /d 1 /f
+	
+	rem UAC setting (Prompt on Secure Desktop)
+	reg ADD HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v PromptOnSecureDesktop /t REG_DWORD /d 1 /f
+	
+	rem Enable Installer Detection
+	reg ADD HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableInstallerDetection /t REG_DWORD /d 1 /f
+	
+	rem Undock without logon
+	reg ADD HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v undockwithoutlogon /t REG_DWORD /d 0 /f
+	
+	rem Maximum Machine Password Age
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\Netlogon\Parameters /v MaximumPasswordAge /t REG_DWORD /d 15 /f
+	
+	rem Require Strong Session Key
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\Netlogon\Parameters /v RequireStrongKey /t REG_DWORD /d 1 /f
+	
+	rem Require Sign/Seal
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\Netlogon\Parameters /v RequireSignOrSeal /t REG_DWORD /d 1 /f
+	
+	rem Sign Channel
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\Netlogon\Parameters /v SignSecureChannel /t REG_DWORD /d 1 /f
+	
+	rem Seal Channel
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\Netlogon\Parameters /v SealSecureChannel /t REG_DWORD /d 1 /f
+	
+	rem Don't disable CTRL+ALT+DEL even though it serves no purpose
+	reg ADD HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v DisableCAD /t REG_DWORD /d 0 /f 
+	
+	rem Restrict Anonymous Enumeration #1
+	reg ADD HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v restrictanonymous /t REG_DWORD /d 1 /f 
+	
+	rem Restrict Anonymous Enumeration #2
+	reg ADD HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v restrictanonymoussam /t REG_DWORD /d 1 /f 
+	
+	rem Idle Time Limit - 45 mins
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters /v autodisconnect /t REG_DWORD /d 45 /f 
+	
+	rem Disable Domain Credential Storage
+	reg ADD HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v disabledomaincreds /t REG_DWORD /d 1 /f 
+	
+	rem Don't Give Anons Everyone Permissions
+	reg ADD HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v everyoneincludesanonymous /t REG_DWORD /d 0 /f 
+	
+	rem SMB Passwords unencrypted to third party
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\LanmanWorkstation\Parameters /v EnablePlainTextPassword /t REG_DWORD /d 0 /f
+	
+	rem Null Session Pipes Cleared
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters /v NullSessionPipes /t REG_MULTI_SZ /d "" /f
+	
+	rem remotely accessible registry paths cleared
+	reg ADD HKLM\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedExactPaths /v Machine /t REG_MULTI_SZ /d "" /f
+	
+	rem remotely accessible registry paths and sub-paths cleared
+	reg ADD HKLM\SYSTEM\CurrentControlSet\Control\SecurePipeServers\winreg\AllowedPaths /v Machine /t REG_MULTI_SZ /d "" /f
+	
+	rem Restict anonymous access to named pipes and shares
+	reg ADD HKLM\SYSTEM\CurrentControlSet\services\LanmanServer\Parameters /v NullSessionShares /t REG_MULTI_SZ /d "" /f
+	
+	rem Allow to use Machine ID for NTLM
+	reg ADD HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v UseMachineId /t REG_DWORD /d 0 /f
 
-:EnableFirewall
-NetSh Advfirewall set allprofiles state on
-netsh advfirewall firewall set rule name="Remote Assistance (DCOM-In)" new enable=no 
-netsh advfirewall firewall set rule name="Remote Assistance (PNRP-In)" new enable=no 
-netsh advfirewall firewall set rule name="Remote Assistance (RA Server TCP-In)" new enable=no 
-netsh advfirewall firewall set rule name="Remote Assistance (SSDP TCP-In)" new enable=no 
-netsh advfirewall firewall set rule name="Remote Assistance (SSDP UDP-In)" new enable=no 
-netsh advfirewall firewall set rule name="Remote Assistance (TCP-In)" new enable=no 
-netsh advfirewall firewall set rule name="Telnet Server" new enable=no 
-netsh advfirewall firewall set rule name="netcat" new enable=no
+	rem Enables DEP
+	bcdedit.exe /set {current} nx AlwaysOn
+	pause
+	goto :menu
+	
+:audit
+	echo Auditing the maching now
+	auditpol /set /category:* /success:enable
+	auditpol /set /category:* /failure:enable
+	
+	pause
+	goto :menu
 
+:group
+	cls
+	net localgroup
+	set /p grp=What group would you like to check?:
+	net localgroup !grp!
+	set /p answer=Is there a user you would like to add or remove?[add/remove/back]:
+	if "%answer%"=="add" (
+		set /p userAdd=Please enter the user you would like to add: 
+		net localgroup !grp! !userAdd! /add
+		echo !userAdd! has been added to !grp!
+	)
+	if "%answer%"=="remove" (
+		set /p userRem=Please enter the user you would like to remove:
+		net localgroup !grp! !userRem! /delete
+		echo !userRem! has been removed from !grp!
+	)
+	if "%answer%"=="back" (
+		goto :group
+	)
 
-
-:RDP
-set /p rdpi="Enable/Disable Remote Desktop (enable/disable)"
-
-if %rdpi%==disable (
-  reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 0 /f
-  reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v fEnableWinStation /t REG_DWORD /d 0 /f
-  reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 1 /f
-  netsh advfirewall firewall set rule group="remote desktop" new enable=No
-  netsh advfirewall firewall set service type = remotedesktop mode = disable
-  powershell.exe -Command Set-Service -Name termService -StartupType Disabled -Status Stopped
-)
-if %rpid%=enable (
-  reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f
-  reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v fEnableWinStation /t REG_DWORD /d 1 /f
-  reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
-  netsh advfirewall firewall set rule group="remote desktop" new enable=yes
-  netsh advfirewall firewall set service type = remotedesktop mode = enable
-  powershell.exe -Command Set-Service -Name termService -StartupType Manual -Status Running
-)
-goto Menu
-
-
-REM Disable Remote Desktop Services in Services.msc use powershell set-services
-
-
-:DisablePrinters
-net stop spooler
-reg add "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v LegacyDefaultPrinterMode /t REG_DWORD /d 1 /f
-reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers" /v AddPrinterDrivers /t REG_DWORD /d 1 /f
-powershell.exe -Command Set-Service -Name spooler -StartupType Disabled -Status Stopped
-pause 
-goto Menu
-
-:DisableUSBPorts
-reg add "HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\USBSTOR" /v Start /t REG_DWORD /d 4 /f
-
-:EnableWindowsUpdates
-reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU /v AutoInstallMinorUpdates /t REG_DWORD /d 1 /f
-reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU /v NoAutoUpdate /t REG_DWORD /d 0 /f
-reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU /v AUOptions /t REG_DWORD /d 4 /f
-reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update" /v AUOptions /t REG_DWORD /d 4 /f
-reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate /v DisableWindowsUpdateAccess /t REG_DWORD /d 0 /f
-reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate /v ElevateNonAdmins /t REG_DWORD /d 0 /f
-reg add HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer /v NoWindowsUpdate /t REG_DWORD /d 0 /f
-reg add "HKLM\SYSTEM\Internet Communication Management\Internet Communication" /v DisableWindowsUpdateAccess /t REG_DWORD /d 0 /f
-reg add HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate /v DisableWindowsUpdateAccess /t REG_DWORD /d 0 /f
-
-:Menu
-
-echo 1 = Set Local User Policy
-echo 2 = Enable Firwall
-echo 3 = RDP (Remote Desktop)
-echo 4 = Disable Guest & Administrator
-echo 5 = Disable Printing Services
-echo 6 = Disable USB
-echo 7 = Browswer Security
-echo 8 = Password Security
-echo 9 = Show Hidden
-set /p i="Select number"
-
-if %i%==1: (
- :SetSecPol
-)
-if %i%==2: (
- :EnableFireWall
-)
-
-if %i%==3: (
- :RDP
-)
-
-if %i%==4: (
- :Menu
-)
-
-if %i%==5: (
- :DisablePrinters
-)
-
-if %i%==6: (
- :DisableUSBPorts
-)
-
-if %i%==7: (
- :WebSecurity
-)
-
-if %i%==8: (
- :PasswordSecurity
-)
-
-if %i%==9: (
- :ShowHidden
-)
-
-:ConfirmBeforeStart
-set /p i="Did you complete the forensic (y/n)"
-
-if %i% ==y (
-  :Menu
-)
-
-if %i% ==n (
-  echo OPERATION CANCELLED!
-  exit
-) 
-
-else (
-  echo Please try again, input must be lowercase!
-  :ConfirmBeforeStart
-)
-
-:ConfirmBeforeStart
+	set /p answer=Would you like to go check again?[y/n]
+	if /I "%answer%"=="y" (
+		goto :group
+	)
+	if /I "%answer%"=="n" (
+		goto :menu
+	)
+endlocal
