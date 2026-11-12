@@ -74,7 +74,7 @@ REM Disable Remote Desktop Services in Services.msc use powershell set-services
 
 
 :DisablePrinters
-net stop spoolers
+net stop spooler
 reg add "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v LegacyDefaultPrinterMode /t REG_DWORD /d 1 /f
 reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers" /v AddPrinterDrivers /t REG_DWORD /d 1 /f
 powershell.exe -Command Set-Service -Name spooler -StartupType Disabled -Status Stopped
