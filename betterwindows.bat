@@ -1,4 +1,37 @@
-#Requires -RunAsAdministrator
+@echo off
+setlocal
+title CyberPatriot Windows hardening
+rem ===========================================================================
+rem  CyberPatriot Windows Hardening - just double-click this file.
+rem
+rem  This ONE file contains the whole PowerShell hardening script (everything
+rem  below the PSCODE marker line). It asks for administrator rights, then runs
+rem  the script in this window - no execution-policy changes needed.
+rem
+rem  BEFORE RUNNING: answer the forensics questions and read the README.
+rem  If Windows says "Windows protected your PC": More info > Run anyway.
+rem ===========================================================================
+set "CP_SELF=%~f0"
+
+rem --- not elevated yet? relaunch this file as administrator (UAC prompt) ---
+fltmc >nul 2>&1
+if errorlevel 1 (
+  echo Requesting administrator rights - click Yes on the prompt...
+  powershell.exe -NoProfile -Command "Start-Process -FilePath $env:CP_SELF -Verb RunAs"
+  exit /b
+)
+cd /d "%~dp0"
+
+rem --- run the PowerShell script embedded below the marker ---
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$t = [IO.File]::ReadAllText($env:CP_SELF); $m = ('#' * 5) + 'PSCODE' + ('#' * 5); $i = $t.IndexOf($m); if ($i -lt 0) { Write-Host 'Embedded script not found - is this file complete?' -ForegroundColor Red; exit 1 }; . ([scriptblock]::Create($t.Substring($i + $m.Length)))"
+
+echo.
+echo The script has finished. Read the summary above, then press any key to close this window.
+pause >nul
+exit /b
+
+rem Everything below is PowerShell, read by the line above. Batch never reaches it.
+#####PSCODE#####
 <#
 ===============================================================================
   CyberPatriot Windows Hardening Script
@@ -55,7 +88,7 @@ $ForFile = Join-Path $Out 'FORENSICS.txt'
 $Backup  = "C:\CP-Backups\$Stamp"
 $Quar    = 'C:\CP-Quarantine'
 $RegLog  = Join-Path $Backup 'registry-changes.tsv'
-$ScriptPath = $PSCommandPath
+$ScriptPath = $PSCommandPath; if ($env:CP_SELF) { $ScriptPath = $env:CP_SELF }   # the .bat launcher passes its own path
 New-Item -ItemType Directory -Force -Path $LogDir, $Backup, $Quar | Out-Null
 # Only Administrators/SYSTEM may read the backups and quarantine
 foreach ($d in 'C:\CP-Backups', $Quar) { & icacls.exe $d /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' 2>&1 | Out-Null }
@@ -1143,7 +1176,7 @@ function Get-SuspicionReason([string]$cmd, [string]$exe) {
   if ($exe -and $exe -match $UserWritableRe -and (Test-Path -LiteralPath $exe -PathType Leaf) -and -not (Test-Signed $exe)) { $why += 'unsigned program in a user-writable folder' }
   return ($why -join '; ')
 }
-$Hives = @(); $MountedHives = @()
+$Hives = @(); $script:MountedHives = @()
 function Mount-UserHives {
   $res = @()
   foreach ($p in @(Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { -not $_.Special -and $_.SID -match '^S-1-5-21-' })) {
@@ -1153,11 +1186,11 @@ function Mount-UserHives {
     $dat = Join-Path $p.LocalPath 'NTUSER.DAT'; if (-not (Test-Path -LiteralPath $dat)) { continue }
     $mn = "CP_$($p.SID)"
     & reg.exe load "HKU\$mn" $dat 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { $script:MountedHives += $mn; $res += [pscustomobject]@{ User = $user; Root = "Registry::HKEY_USERS\$mn" } }
+    if ($LASTEXITCODE -eq 0) { $script:MountedHives = @($script:MountedHives) + $mn; $res += [pscustomobject]@{ User = $user; Root = "Registry::HKEY_USERS\$mn" } }
   }
   $dd = 'C:\Users\Default\NTUSER.DAT'      # template for accounts created later
   if (Test-Path -LiteralPath $dd) { & reg.exe load 'HKU\CP_DEFAULT' $dd 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { $script:MountedHives += 'CP_DEFAULT'; $res += [pscustomobject]@{ User = '(new users)'; Root = 'Registry::HKEY_USERS\CP_DEFAULT' } } }
+    if ($LASTEXITCODE -eq 0) { $script:MountedHives = @($script:MountedHives) + 'CP_DEFAULT'; $res += [pscustomobject]@{ User = '(new users)'; Root = 'Registry::HKEY_USERS\CP_DEFAULT' } } }
   return $res
 }
 function Dismount-UserHives {
