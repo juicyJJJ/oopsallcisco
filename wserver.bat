@@ -201,19 +201,6 @@ function Invoke-QuarantineList([string]$Desc, [string[]]$Files) {
   Log "Quarantined $n $Desc (originals kept under $Quar\files)"
 }
 
-# Levenshtein distance (typo warning when a README name doesn't exist but a similar one does)
-function Get-Lev([string]$a, [string]$b) {
-  $d = New-Object 'int[,]' ($a.Length + 1), ($b.Length + 1)
-  for ($i = 0; $i -le $a.Length; $i++) { $d[$i, 0] = $i }
-  for ($j = 0; $j -le $b.Length; $j++) { $d[0, $j] = $j }
-  for ($i = 1; $i -le $a.Length; $i++) {
-    for ($j = 1; $j -le $b.Length; $j++) {
-      $c = 1; if ($a[$i - 1] -eq $b[$j - 1]) { $c = 0 }
-      $d[$i, $j] = [Math]::Min([Math]::Min($d[($i - 1), $j] + 1, $d[$i, ($j - 1)] + 1), $d[($i - 1), ($j - 1)] + $c)
-    }
-  }
-  return $d[$a.Length, $b.Length]
-}
 
 #-------------------------------- services ------------------------------------
 function Disable-Svc([string[]]$Names) {
